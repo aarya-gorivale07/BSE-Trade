@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BSE trades</title>
+<style>
+  :root {
+    --bg: #eef1f4; --panel: #ffffff; --ink: #14202b; --muted: #5b6b7a; --line: #d9dfe5;
+    --accent: #0b5d73; --fresh: #ffe7b0; --ok: #1f7a4d; --err: #b3261e;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1820; --panel: #16222c; --ink: #e6edf2; --muted: #93a4b3; --line: #263543; --accent: #5cc3dc; --fresh: #4a3c12; --ok: #5fd39a; --err: #ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; }
+  h1 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin-top: 2px; }
+  button { font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark) { button { color: #07151c; } }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--accent); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .status { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--muted); border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
+  .status.pulling { border-left-color: var(--accent); }
+  .status.error { border-left-color: var(--err); }
+  .status strong { font-weight: 650; }
+  .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); display: none; }
+  .status.pulling .pulse { display: inline-block; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .status.pulling .pulse { animation: none; } }
+  .grow { flex: 1; }
+  .live { color: var(--muted); font-size: 13px; }
+  .live::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .live.on::before { background: var(--ok); }
+
+  .toast { display: none; background: var(--fresh); border-radius: 6px; padding: 10px 16px; margin-bottom: 12px; font-weight: 600; }
+  .toast.show { display: block; }
+
+  .tools { display: flex; gap: 12px; align-items: center; margin: 14px 0 8px; flex-wrap: wrap; }
+  input[type=search] { font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); min-width: 260px; }
+  .count { color: var(--muted); }
+
+  .table { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 9px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { position: sticky; top: 0; background: var(--panel); font-size: 13px; color: var(--muted); font-weight: 600; }
+  td.n, th.n { text-align: right; }
+  tr.fresh td { background: var(--fresh); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+  .more { margin: 12px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>BSE trades</h1>
+      <div class="sub">Pulled from the exchange in the background. New trades appear here as soon as a pull finishes.</div>
+    </div>
+    <button id="pullBtn">Pull latest trades</button>
+  </header>
+
+  <div id="status" class="status" role="status" aria-live="polite">
+    <span class="pulse"></span>
+    <span id="statusText">Loading…</span>
+    <span class="grow"></span>
+    <span id="live" class="live">Connecting</span>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <div class="tools">
+    <input id="q" type="search" placeholder="Filter by client, symbol or trade ID" aria-label="Filter trades">
+    <span id="count" class="count"></span>
+  </div>
+
+  <div class="table">
+    <table>
+      <thead><tr><th>Trade ID</th><th>Client</th><th>Symbol</th><th class="n">Quantity</th><th class="n">Price (₹)</th><th>Time (IST)</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>No trades yet. The first pull is running; this table fills in when it completes.</div>
+  </div>
+  <div class="more"><button id="moreBtn" class="ghost" hidden>Show more</button></div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const trades = new Map();         // tradeId -> trade
+  const fresh = new Set();          // ids to highlight
+  let seq = 0, pull = {}, limit = 200, timer = null, toastTimer = null;
+
+  const fmtTime = (iso) => new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+  const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' });
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const mmss = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+  function render() {
+    const needle = $('q').value.trim().toLowerCase();
+    const all = [...trades.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const list = needle ? all.filter((t) => (t.tradeId + t.client + t.symbol).toLowerCase().includes(needle)) : all;
+    $('rows').innerHTML = list.slice(0, limit).map((t) => `<tr class="${fresh.has(t.tradeId) ? 'fresh' : ''}">
+      <td>${esc(t.tradeId)}</td><td>${esc(t.client)}</td><td>${esc(t.symbol)}</td>
+      <td class="n">${t.quantity.toLocaleString('en-IN')}</td><td class="n">${t.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td>${fmtTime(t.timestamp)}</td></tr>`).join('');
+    $('empty').hidden = list.length > 0;
+    $('count').textContent = list.length ? `Showing ${Math.min(limit, list.length).toLocaleString('en-IN')} of ${list.length.toLocaleString('en-IN')} trades` : '';
+    $('moreBtn').hidden = list.length <= limit;
+  }
+
+  function renderStatus() {
+    const box = $('status'), txt = $('statusText'), btn = $('pullBtn');
+    box.className = 'status ' + (pull.state || '');
+    btn.disabled = pull.state === 'pulling';
+    clearInterval(timer);
+    const last = pull.lastCompletedAt ? `Last updated ${fmtDateTime(pull.lastCompletedAt)}` : 'No completed pull yet';
+    if (pull.state === 'pulling') {
+      const tick = () => { txt.innerHTML = `<strong>Pull in progress</strong> · running for ${mmss(Date.now() - new Date(pull.startedAt))} · ${esc(last)}`; };
+      tick(); timer = setInterval(tick, 1000); // local clock only, no network
+    } else if (pull.state === 'error') {
+      txt.innerHTML = `<strong>Last pull failed:</strong> ${esc(pull.error)}. Showing ${trades.size.toLocaleString('en-IN')} trades from earlier pulls.`;
+    } else {
+      txt.innerHTML = `<strong>Up to date</strong> · ${esc(last)}`;
+    }
+  }
+
+  function addTrades(list) {
+    list.forEach((t) => { if (!trades.has(t.tradeId)) { trades.set(t.tradeId, t); fresh.add(t.tradeId); } });
+    render();
+  }
+
+  function showToast(n) {
+    const el = $('toast');
+    el.textContent = `${n.toLocaleString('en-IN')} new trades added`;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.classList.remove('show'); fresh.clear(); render(); }, 8000);
+  }
+
+  async function boot() {
+    // 1. Instant paint from what the server already has (never waits on BSE).
+    const snap = await (await fetch('/api/trades')).json();
+    snap.trades.forEach((t) => trades.set(t.tradeId, t));
+    seq = snap.seq; pull = snap.pull;
+    render(); renderStatus();
+
+    // 2. Subscribe to pushes. EventSource reconnects by itself (server closes every ~25s to stay under the
+    //    30s network limit) and sends Last-Event-ID so nothing is missed.
+    const es = new EventSource('/api/events?after=' + seq);
+    es.onopen = () => { $('live').textContent = 'Live'; $('live').classList.add('on'); };
+    es.onerror = () => { $('live').textContent = 'Reconnecting'; $('live').classList.remove('on'); };
+    es.addEventListener('trades', (e) => {
+      const list = JSON.parse(e.data);
+      const before = trades.size;
+      addTrades(list);
+      const added = trades.size - before;
+      if (added) showToast(added);
+    });
+    es.addEventListener('pull', (e) => { pull = JSON.parse(e.data); renderStatus(); });
+  }
+
+  $('pullBtn').addEventListener('click', () => fetch('/api/pull', { method: 'POST' }));
+  $('q').addEventListener('input', () => { limit = 200; render(); });
+  $('moreBtn').addEventListener('click', () => { limit += 500; render(); });
+  boot();
+})();
+</script>
+</body>
+</html>

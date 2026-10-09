@@ -1,0 +1,13 @@
+{
+  "name": "bse-trades",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Long-running BSE pull, live trades dashboard. Zero dependencies.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "mock": "node mock-bse/server.js",
+    "app": "node app/server.js",
+    "start": "node scripts/start-all.js",
+    "demo": "BSE_DELAY_MS=20000 node scripts/start-all.js"
+  }
+}
