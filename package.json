@@ -8,6 +8,6 @@
     "mock": "node mock-bse/server.js",
     "app": "node app/server.js",
     "start": "node scripts/start-all.js",
-    "demo": "BSE_DELAY_MS=20000 node scripts/start-all.js"
+    "demo": "node scripts/start-all.js --demo"
   }
 }
