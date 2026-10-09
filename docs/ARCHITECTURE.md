@@ -10,27 +10,46 @@
 ## Diagram
 
 ```mermaid
-flowchart LR
-  subgraph Browser
-    D[Dashboard]
+flowchart TB
+  B["Browser dashboard"]
+  subgraph S["App server"]
+    direction TB
+    R["Read API<br/>GET /api/trades"]
+    E["Event stream<br/>GET /api/events"]
+    T["Trigger<br/>POST /api/pull"]
+    I["Ingestor"]
+    D[("Trade store")]
   end
-  subgraph App["App server (Node)"]
-    API["GET /api/trades (snapshot)"]
-    SSE["GET /api/events (SSE, closed every 25s)"]
-    TRG["POST /api/pull (returns 202)"]
-    ING[Ingestor]
-    ST[("Trade store: Map + JSON file, seq-versioned")]
-  end
-  BSE["BSE API: GET /getTrades (holds ~15 min)"]
+  X["BSE API<br/>GET /getTrades (about 15 min)"]
 
-  D -- "1. open: instant read" --> API --> ST
-  D -- "2. subscribe, auto-reconnect with Last-Event-ID" --> SSE
-  D -- "button" --> TRG --> ING
-  ING -- "long call, server side, no browser involved" --> BSE
-  BSE -- "trades" --> ING
-  ING -- "dedupe, assign seq, persist" --> ST
-  ING -- "broadcast new trades" --> SSE
-  SSE -- "event: trades" --> D
+  B -->|"1. open page"| R
+  R --> D
+  B -->|"2. subscribe"| E
+  B -->|"button"| T
+  T --> I
+  I -->|"long call, server side"| X
+  X -->|"trades"| I
+  I -->|"save new trades"| D
+  I -->|"push new trades"| E
+  E -->|"live update"| B
+```
+
+### Timeline of one pull
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant S as App server
+  participant X as BSE API
+  S->>X: GET /getTrades (server waits, up to 15 min)
+  B->>S: GET /api/trades
+  S-->>B: stored trades (instant)
+  B->>S: open /api/events
+  Note over B,S: Server closes the stream every 25s.<br/>Browser reconnects with Last-Event-ID.
+  X-->>S: all trades
+  S->>S: dedupe, assign seq, save
+  S-->>B: event: trades (new rows only)
+  Note over B: New rows appear, no refresh
 ```
 
 ## Why this design
